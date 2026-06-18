@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+azure-cosmos
+python-dotenv
+pydantic
+bcrypt==4.0.1
+passlib
