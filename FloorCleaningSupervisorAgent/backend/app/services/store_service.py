@@ -15,10 +15,15 @@ from app.core.database import (
     tags_container,
     users_container,
 )
+from app.services.scan_service import _ensure_daily_rounds
 
 
 def _now() -> str:
     return datetime.utcnow().isoformat()
+
+
+def _today_date() -> str:
+    return datetime.utcnow().date().isoformat()
 
 
 def _store_defaults(store: Dict[str, Any]) -> Dict[str, Any]:
@@ -104,6 +109,7 @@ def update_store_config(
     store["updated_at"] = _now()
 
     stores_container.replace_item(item=store_id, body=store)
+    _ensure_daily_rounds(store_id, _today_date(), daily_rounds, checkpoint_count or 1)
     return {"message": "Store configuration updated", "store": store}
 
 
@@ -140,4 +146,3 @@ def delete_store(store_id: str):
 
     stores_container.delete_item(item=store_id, partition_key=store_id)
     return {"message": "Store deleted successfully"}
-

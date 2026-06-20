@@ -103,7 +103,7 @@ function ScanTab({ checkpoints, scanStatus, onScan, onAlerts, alertCount, storeN
   const hasCheckpointWork = checkpoints.length > 0;
   const currentRoundComplete = hasCheckpointWork && pendingCount === 0 && errorCount === 0 && scannedCount === checkpoints.length;
   const allDone = allWorkCompleted || (hasConfiguredRounds && completedRounds >= configuredRounds && currentRoundComplete);
-  const scanLabel = allDone ? 'ALL DONE' : hasCheckpointWork ? 'TAP TO SCAN' : 'WAITING FOR FIRST SCAN';
+  const scanLabel = allDone ? 'ALL DONE' : hasCheckpointWork ? 'READY TO SCAN' : 'WAITING FOR FIRST SCAN';
   const scanDisabled = scanStatus === 'scanning' || allDone || !hasCheckpointWork;
 
   return (
@@ -183,12 +183,20 @@ function DashboardTab({ checkpoints, onAlerts, alertCount, storeName, currentRou
   currentRound?: Round | null;
   completedRounds: Round[];
   complianceHistory: ComplianceData[];
-  stats: { today_scans: number; today_compliance: number; active_alerts: number; completed_rounds: number };
+  stats: {
+    today_scans: number;
+    today_compliance: number;
+    active_alerts: number;
+    completed_rounds: number;
+    configured_rounds?: number;
+    remaining_rounds?: number;
+  };
 }) {
   const t = useT();
   const myComp = stats.today_compliance || 0;
-  const myRoundsDone = completedRounds.length;
-  const myRoundsTotal = completedRounds.length + (currentRound ? 1 : 0);
+  const myRoundsDone = stats.completed_rounds ?? completedRounds.length;
+  const myRoundsTotal = stats.configured_rounds ?? completedRounds.length + (currentRound ? 1 : 0);
+  const remainingRounds = stats.remaining_rounds ?? Math.max(myRoundsTotal - myRoundsDone, 0);
   const activeScanned = checkpoints.filter(cp => cp.status === 'verified').length;
   const allRounds = [
     currentRound ? { ...currentRound, isActive: true } : null,
@@ -215,8 +223,8 @@ function DashboardTab({ checkpoints, onAlerts, alertCount, storeName, currentRou
               </div>
               <div className="flex-1 space-y-2">
                 {[
-                  { label: 'All rounds today', val: `${stats.completed_rounds + (currentRound ? 1 : 0)} / ${myRoundsTotal || 1}`, cls: t.text, sub: 'done / planned' },
-                  { label: 'My rounds', val: `${myRoundsTotal}`, cls: 'text-orange-500', sub: `${myRoundsDone} done · ${currentRound ? '1 active' : '0 active'}` },
+                  { label: 'All rounds today', val: `${myRoundsDone} / ${myRoundsTotal || 1}`, cls: t.text, sub: `${remainingRounds} remaining` },
+                  { label: 'My rounds', val: `${myRoundsTotal || 0}`, cls: 'text-orange-500', sub: `${myRoundsDone} done · ${currentRound ? `Round ${currentRound.roundNumber ?? ''}` : '0 active'}` },
                   { label: 'Store compliance', val: `${myComp}%`, cls: myComp >= 85 ? 'text-green-600' : myComp >= 70 ? 'text-amber-500' : 'text-red-500', sub: 'all staff today' },
                   { label: 'My compliance', val: `${myComp}%`, cls: myComp >= 85 ? 'text-green-600' : myComp >= 70 ? 'text-amber-500' : 'text-orange-500', sub: 'my rounds today' },
                 ].map(s => (

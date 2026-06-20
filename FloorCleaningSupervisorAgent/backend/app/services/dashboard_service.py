@@ -4,15 +4,19 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.core.database import alerts_container, rounds_container, scan_container, stores_container, tags_container, users_container
+from app.core.database import alerts_container, checkpoints_container, rounds_container, scan_container, stores_container, tags_container, users_container
 from app.services.alert_service import get_alert_summary, list_alerts
-from app.services.scan_service import get_scan_history, get_scan_stats
+from app.services.scan_service import _ensure_daily_rounds, _expected_checkpoints, get_scan_history, get_scan_stats
 from app.services.tag_service import get_tag_stats
 
 
 def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+
+
+def _today_date() -> str:
+    return datetime.utcnow().date().isoformat()
     try:
         return datetime.fromisoformat(value.replace("Z", ""))
     except Exception:
@@ -74,21 +78,70 @@ def _bucket_scans(scans: List[Dict[str, Any]]):
     return [{"hour": hour, **values} for hour, values in sorted(grouped.items(), key=lambda item: _hour_sort_key(item[0]))]
 
 
-def _store_rounds(store_id: str):
-    rounds = list(
-        rounds_container.query_items(
-            query="SELECT * FROM c WHERE c.store_id=@store_id",
+def _store_rounds(store_id: str, shift_date: Optional[str] = None):
+    if shift_date:
+        rounds = list(
+            rounds_container.query_items(
+                query="SELECT * FROM c WHERE c.store_id=@store_id AND c.shift_date=@shift_date AND IS_DEFINED(c.round_number)",
+                parameters=[
+                    {"name": "@store_id", "value": store_id},
+                    {"name": "@shift_date", "value": shift_date},
+                ],
+                enable_cross_partition_query=True,
+            )
+        )
+    else:
+        rounds = list(
+            rounds_container.query_items(
+                query="SELECT * FROM c WHERE c.store_id=@store_id AND IS_DEFINED(c.round_number)",
+                parameters=[{"name": "@store_id", "value": store_id}],
+                enable_cross_partition_query=True,
+            )
+        )
+    rounds.sort(key=lambda item: (item.get("shift_date") or "", int(item.get("round_number", 0) or 0)))
+    return rounds
+
+
+def _store_checkpoints(store_id: str):
+    if not store_id:
+        return []
+    checkpoints = list(
+        checkpoints_container.query_items(
+            query="SELECT * FROM c WHERE c.store_id=@store_id AND (NOT IS_DEFINED(c.deployment_status) OR c.deployment_status != 'cancelled')",
             parameters=[{"name": "@store_id", "value": store_id}],
             enable_cross_partition_query=True,
         )
     )
-    rounds.sort(key=lambda item: item.get("time") or item.get("startTime") or "", reverse=True)
-    return rounds
+    checkpoints.sort(key=lambda item: item.get("name") or item.get("location") or item.get("id") or "")
+    return checkpoints
 
 
-def _round_to_view(round_item: Dict[str, Any], active: bool = False):
+def _checkpoint_items_for_round(round_item: Dict[str, Any]):
     scans = round_item.get("scans", []) or []
-    checkpoint_items = [
+    scan_by_key = {
+        scan.get("checkpoint_id") or scan.get("nfcUid") or scan.get("nfc_tag_uid"): scan
+        for scan in scans
+        if scan.get("checkpoint_id") or scan.get("nfcUid") or scan.get("nfc_tag_uid")
+    }
+    checkpoint_items = []
+    for checkpoint in _store_checkpoints(round_item.get("store_id")):
+        key = checkpoint.get("id") or checkpoint.get("nfc_tag_uid")
+        scan = scan_by_key.get(key) or scan_by_key.get(checkpoint.get("nfc_tag_uid")) or {}
+        checkpoint_items.append(
+            {
+                "id": checkpoint.get("id"),
+                "location": checkpoint.get("name") or checkpoint.get("location") or checkpoint.get("nfc_tag_uid"),
+                "zone": checkpoint.get("zone"),
+                "uid": checkpoint.get("nfc_tag_uid"),
+                "status": scan.get("status") or scan.get("scan_status") or "pending",
+                "scannedAt": scan.get("scannedAt") or scan.get("time"),
+            }
+        )
+
+    if checkpoint_items:
+        return checkpoint_items
+
+    return [
         {
             "id": scan.get("id"),
             "location": scan.get("location"),
@@ -99,6 +152,11 @@ def _round_to_view(round_item: Dict[str, Any], active: bool = False):
         }
         for scan in scans
     ]
+
+
+def _round_to_view(round_item: Dict[str, Any], active: bool = False):
+    scans = round_item.get("scans", []) or []
+    checkpoint_items = _checkpoint_items_for_round(round_item)
     return {
         "id": round_item.get("id"),
         "name": round_item.get("name"),
@@ -273,9 +331,13 @@ def store_dashboard(store_id: str):
         return None
 
     store = _safe_store(store)
+    shift_date = _today_date()
+    daily_rounds = int(store.get("daily_rounds", 0) or 0)
+    expected_checkpoints = _expected_checkpoints(store, store_id, None)
+    _ensure_daily_rounds(store_id, shift_date, daily_rounds or 1, expected_checkpoints or 1)
     scans = get_scan_history(store_id)
     alerts = _store_alerts(store_id)
-    stored_rounds = _store_rounds(store_id)
+    stored_rounds = _store_rounds(store_id, shift_date)
     tag_stats = get_tag_stats(store_id)
     scan_stats = get_scan_stats(store_id)
     store["compliance"] = store.get("compliance") or _compliance_from_scans(scans)
@@ -299,26 +361,8 @@ def store_dashboard(store_id: str):
             )
         )
 
-    daily_rounds = int(store.get("daily_rounds", 0) or 0)
-    if daily_rounds > len(rounds):
-        for round_number in range(len(rounds) + 1, daily_rounds + 1):
-            rounds.append(
-                {
-                    "id": f"{store_id}:round:{round_number}",
-                    "name": f"Round {round_number}",
-                    "time": None,
-                    "staff": None,
-                    "compliance": 0,
-                    "totalScans": 0,
-                    "completedScans": 0,
-                    "isActive": False,
-                    "checkpointItems": [],
-                    "status": "pending",
-                    "round_number": round_number,
-                    "completed_by": None,
-                    "completion_time": None,
-                }
-            )
+    completed_rounds_count = len([round_item for round_item in stored_rounds if round_item.get("status") == "completed"])
+    remaining_rounds = max(daily_rounds - completed_rounds_count, 0)
 
     return {
         "store": store,
@@ -328,6 +372,9 @@ def store_dashboard(store_id: str):
         "compliance_history": _compliance_history_from_scans(scans),
         "rounds": rounds,
         "nfc_details": _nfc_details(store, stored_rounds),
+        "daily_rounds": daily_rounds,
+        "completed_rounds_count": completed_rounds_count,
+        "remaining_rounds": remaining_rounds,
         "alerts": alerts,
         "stale_time": _stale_time(scans),
     }
@@ -340,15 +387,22 @@ def cleaner_dashboard(user_id: str):
 
     store_id = user.get("store_id")
     store = next((s for s in stores_container.read_all_items() if s.get("id") == store_id), None) if store_id else None
+    safe_store = _safe_store(store) if store else None
+    shift_date = _today_date()
+    configured_rounds = int((safe_store or {}).get("daily_rounds", 0) or 0)
+    required_checkpoints = _expected_checkpoints(safe_store, store_id, None) if store_id else 0
+    if store_id and safe_store:
+        _ensure_daily_rounds(store_id, shift_date, configured_rounds or 1, required_checkpoints or 1)
     scans = get_scan_history(store_id) if store_id else []
-    rounds = _store_rounds(store_id) if store_id else []
+    rounds = _store_rounds(store_id, shift_date) if store_id else []
+    rounds.sort(key=lambda item: int(item.get("round_number", 0) or 0))
     active_round = next((r for r in rounds if r.get("status") == "active"), None)
+    current_round = active_round or next((r for r in rounds if r.get("status") == "pending"), None)
     completed_rounds = [round_item for round_item in rounds if round_item.get("status") == "completed"]
     alerts = _store_alerts(store_id) if store_id else []
-    configured_rounds = int(store.get("daily_rounds", 0) or 0) if store else 0
-    required_checkpoints = int(store.get("checkpoint_count", 0) or 0) if store else 0
+    remaining_rounds = max(configured_rounds - len(completed_rounds), 0)
 
-    compliance_history = store.get("complianceHistory") if store and store.get("complianceHistory") else _bucket_scans(scans)
+    compliance_history = safe_store.get("complianceHistory") if safe_store and safe_store.get("complianceHistory") else _bucket_scans(scans)
     stats = {
         "today_scans": len(scans),
         "today_compliance": _compliance_from_scans(scans),
@@ -356,6 +410,8 @@ def cleaner_dashboard(user_id: str):
         "completed_rounds": len(completed_rounds),
         "configured_rounds": configured_rounds,
         "required_checkpoints": required_checkpoints,
+        "remaining_rounds": remaining_rounds,
+        "current_round_number": current_round.get("round_number") if current_round else None,
     }
 
     return {
@@ -369,9 +425,12 @@ def cleaner_dashboard(user_id: str):
             "shift_end": user.get("shift_end"),
             "joined_at": user.get("joined_at"),
         },
-        "store": _safe_store(store) if store else None,
-        "current_round": _round_to_view(active_round, active=True) if active_round else None,
+        "store": safe_store,
+        "current_round": _round_to_view(current_round, active=current_round.get("status") == "active") if current_round else None,
         "completed_rounds": [_round_to_view(round_item) for round_item in completed_rounds],
+        "completed_rounds_count": len(completed_rounds),
+        "daily_rounds": configured_rounds,
+        "remaining_rounds": remaining_rounds,
         "compliance_history": compliance_history,
         "stats": stats,
         "alerts": alerts,

@@ -37,6 +37,7 @@ export interface Round {
   roundNumber?: number;
   completedBy?: string;
   completionTime?: string | null;
+  status?: string;
   scans: ScanLog[];
 }
 
@@ -185,6 +186,9 @@ export interface StoreDashboardResponse {
     last_scan_time: string | null;
     status?: 'completed' | 'pending';
   }>;
+  daily_rounds?: number;
+  completed_rounds_count?: number;
+  remaining_rounds?: number;
   alerts: Alert[];
   stale_time?: string | null;
 }
@@ -203,6 +207,9 @@ export interface CleanerDashboardResponse {
   store?: StoreSummary | null;
   current_round?: StoreDashboardResponse['rounds'][number] | null;
   completed_rounds: StoreDashboardResponse['rounds'][number][];
+  completed_rounds_count?: number;
+  daily_rounds?: number;
+  remaining_rounds?: number;
   compliance_history: ComplianceData[];
   stats: {
     today_scans: number;
@@ -211,6 +218,8 @@ export interface CleanerDashboardResponse {
     completed_rounds: number;
     configured_rounds?: number;
     required_checkpoints?: number;
+    remaining_rounds?: number;
+    current_round_number?: number | null;
   };
   alerts: Alert[];
 }
@@ -507,6 +516,9 @@ export async function getStoreDashboard(storeId: string): Promise<StoreDashboard
       checkpointItems: (data.rounds || []).find((item: any) => item.id === round.id)?.checkpointItems || [],
     })),
     nfc_details: (data.nfc_details || []).map(normalizeNfcDetail),
+    daily_rounds: data.daily_rounds,
+    completed_rounds_count: data.completed_rounds_count,
+    remaining_rounds: data.remaining_rounds,
     alerts: (data.alerts || []).map(normalizeAlert),
     stale_time: data.stale_time ?? null,
   };
@@ -519,6 +531,9 @@ export async function getCleanerDashboard(userId: string): Promise<CleanerDashbo
     store: data.store ? normalizeStoreSummary(data.store) : null,
     current_round: data.current_round ? normalizeRound(data.current_round) : null,
     completed_rounds: (data.completed_rounds || []).map(normalizeRound),
+    completed_rounds_count: data.completed_rounds_count,
+    daily_rounds: data.daily_rounds,
+    remaining_rounds: data.remaining_rounds,
     compliance_history: normalizeCompliance(data.compliance_history || []),
     stats: data.stats,
     alerts: (data.alerts || []).map(normalizeAlert),
@@ -812,6 +827,7 @@ export async function loadStoreView(storeId: string): Promise<Store> {
       roundNumber: round.round_number,
       completedBy: round.completed_by,
       completionTime: round.completion_time ?? null,
+      status: round.status,
       scans: round.checkpointItems.map(item => ({
         id: item.id,
         location: item.location,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from app.core.database import (
     alerts_container,
@@ -135,28 +135,83 @@ def _create_audit_log(store_id: str, action: str, entity_type: str, entity_id: s
     return audit_log
 
 
-def _ensure_round_session(store_id: str, employee_id: str, employee_name: str, shift_date: str, expected_checkpoints: int):
-    round_id = f"{store_id}:{employee_id}:{shift_date}"
-    try:
-        session = rounds_container.read_item(item=round_id, partition_key=store_id)
-    except Exception:
-        session = {
-            "id": round_id,
-            "store_id": store_id,
-            "employee_id": employee_id,
-            "employee_name": employee_name,
-            "name": f"Cleaning Round {shift_date}",
-            "shift_date": shift_date,
-            "time": _now(),
-            "staff": employee_name,
-            "status": "active",
-            "totalScans": expected_checkpoints,
-            "completedScans": 0,
-            "compliance": 0,
-            "scans": [],
-        }
-        rounds_container.create_item(session)
-    return session
+def _store_checkpoint_count(store_id: str) -> int:
+    checkpoints = list(
+        checkpoints_container.query_items(
+            query="SELECT * FROM c WHERE c.store_id=@store_id AND (NOT IS_DEFINED(c.deployment_status) OR c.deployment_status != 'cancelled')",
+            parameters=[{"name": "@store_id", "value": store_id}],
+            enable_cross_partition_query=True,
+        )
+    )
+    return len(checkpoints)
+
+
+def _expected_checkpoints(store: Optional[Dict[str, Any]], store_id: str, checkpoint: Optional[Dict[str, Any]]) -> int:
+    configured = int((store or {}).get("checkpoint_count", 0) or 0)
+    if configured > 0:
+        return configured
+    registered = _store_checkpoint_count(store_id)
+    if registered > 0:
+        return registered
+    return 1 if checkpoint else 0
+
+
+def _daily_rounds(store: Optional[Dict[str, Any]]) -> int:
+    return max(int((store or {}).get("daily_rounds", 1) or 1), 1)
+
+
+def _round_id(store_id: str, shift_date: str, round_number: int) -> str:
+    return f"{store_id}:{shift_date}:{round_number}"
+
+
+def _ensure_daily_rounds(store_id: str, shift_date: str, daily_rounds: int, expected_checkpoints: int):
+    rounds = []
+    for round_number in range(1, daily_rounds + 1):
+        round_id = _round_id(store_id, shift_date, round_number)
+        try:
+            session = rounds_container.read_item(item=round_id, partition_key=store_id)
+            session["totalScans"] = max(int(session.get("totalScans", 0) or 0), expected_checkpoints)
+            session.setdefault("round_number", round_number)
+            session.setdefault("assigned_cleaners", [])
+            session.setdefault("scans", [])
+            session.setdefault("status", "pending")
+            rounds_container.upsert_item(session)
+        except Exception:
+            session = {
+                "id": round_id,
+                "store_id": store_id,
+                "shift_date": shift_date,
+                "round_number": round_number,
+                "name": f"Round {round_number}",
+                "time": None,
+                "staff": None,
+                "status": "pending",
+                "totalScans": expected_checkpoints,
+                "completedScans": 0,
+                "compliance": 0,
+                "assigned_cleaners": [],
+                "scans": [],
+            }
+            rounds_container.create_item(session)
+        rounds.append(session)
+    return rounds
+
+
+def _select_round_session(store_id: str, shift_date: str, daily_rounds: int, expected_checkpoints: int):
+    rounds = _ensure_daily_rounds(store_id, shift_date, daily_rounds, expected_checkpoints)
+    rounds.sort(key=lambda item: int(item.get("round_number", 0) or 0))
+    active = next((round_item for round_item in rounds if round_item.get("status") == "active"), None)
+    if active:
+        return active
+
+    pending = next((round_item for round_item in rounds if round_item.get("status") == "pending"), None)
+    if not pending:
+        return None
+
+    pending["status"] = "active"
+    pending["time"] = pending.get("time") or _now()
+    rounds_container.upsert_item(pending)
+    return pending
 
 
 def _update_round_session(session: Dict[str, Any], scan_item: Dict[str, Any], expected_checkpoints: int):
@@ -164,23 +219,43 @@ def _update_round_session(session: Dict[str, Any], scan_item: Dict[str, Any], ex
     scans.append(
         {
             "id": scan_item["id"],
+            "checkpoint_id": scan_item.get("checkpoint_id"),
             "location": scan_item.get("checkpoint_name") or scan_item.get("tag_location") or scan_item["nfc_tag_uid"],
             "time": scan_item["server_timestamp"],
             "status": scan_item["scan_status"],
             "nfcUid": scan_item["nfc_tag_uid"],
             "staff": scan_item.get("employee_name"),
+            "employee_id": scan_item.get("employee_id"),
             "compliance": 100 if scan_item["scan_status"] == "verified" else 0,
         }
     )
 
-    completed = len([scan for scan in scans if scan["status"] == "verified"])
+    completed_keys = {
+        scan.get("checkpoint_id") or scan.get("nfcUid")
+        for scan in scans
+        if scan.get("status") == "verified" and (scan.get("checkpoint_id") or scan.get("nfcUid"))
+    }
+    completed = len(completed_keys)
     compliance = round((completed / max(expected_checkpoints, 1)) * 100)
+    assigned_cleaners = set(session.get("assigned_cleaners", []) or [])
+    if scan_item.get("employee_id"):
+        assigned_cleaners.add(scan_item["employee_id"])
+
     session["scans"] = scans
     session["completedScans"] = completed
     session["totalScans"] = expected_checkpoints
     session["compliance"] = compliance
     session["last_scan_time"] = scan_item["server_timestamp"]
-    session["status"] = "completed" if completed >= expected_checkpoints else "active"
+    session["assigned_cleaners"] = sorted(assigned_cleaners)
+    session["staff"] = scan_item.get("employee_name") or session.get("staff")
+    session["employee_name"] = scan_item.get("employee_name") or session.get("employee_name")
+    session["employee_id"] = scan_item.get("employee_id") or session.get("employee_id")
+    if completed >= expected_checkpoints and expected_checkpoints > 0:
+        session["status"] = "completed"
+        session["completed_by"] = scan_item.get("employee_name")
+        session["completion_time"] = scan_item["server_timestamp"]
+    else:
+        session["status"] = "active"
     rounds_container.upsert_item(session)
     return session
 
@@ -226,6 +301,19 @@ def process_scan(data):
         return {
             "status": "tag_inactive",
             "message": "Tag is deactivated",
+            "scan_id": None,
+            "store_id": store_id,
+            "checkpoint_id": checkpoint["id"] if checkpoint else None,
+            "alert_ids": [],
+        }
+
+    expected_checkpoints = _expected_checkpoints(store, store_id, checkpoint)
+    daily_rounds = _daily_rounds(store)
+    round_session = _select_round_session(store_id, data.shift_date, daily_rounds, expected_checkpoints or 1)
+    if not round_session:
+        return {
+            "status": "all_rounds_completed",
+            "message": "All rounds completed for today",
             "scan_id": None,
             "store_id": store_id,
             "checkpoint_id": checkpoint["id"] if checkpoint else None,
@@ -341,6 +429,8 @@ def process_scan(data):
         "duplicate_minutes": duplicate_reason,
         "store_name": store.get("name") if store else None,
         "tag_location": tag.get("location") if tag else None,
+        "round_id": round_session["id"],
+        "round_number": round_session.get("round_number"),
     }
 
     scan_container.create_item(scan_item)
@@ -358,11 +448,6 @@ def process_scan(data):
         performed_by=employee_name,
     )
 
-    expected_checkpoints = int(store.get("checkpoint_count", 0) or 0) if store else 0
-    if expected_checkpoints == 0 and checkpoint:
-        expected_checkpoints = 1
-
-    round_session = _ensure_round_session(store_id, employee_id, employee_name, data.shift_date, expected_checkpoints or 1)
     round_session = _update_round_session(round_session, scan_item, expected_checkpoints or 1)
 
     if settings.get("push_alerts") and round_session["compliance"] < 75 and not any(alert_id for alert_id in alert_ids if alert_id):
@@ -421,6 +506,7 @@ def process_scan(data):
         "round": {
             "id": round_session["id"],
             "name": round_session["name"],
+            "round_number": round_session.get("round_number"),
             "compliance": round_session["compliance"],
             "completedScans": round_session["completedScans"],
             "totalScans": round_session["totalScans"],
