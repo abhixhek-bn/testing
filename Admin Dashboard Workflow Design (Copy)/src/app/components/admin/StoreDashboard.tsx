@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronLeft, MapPin, CheckCircle, XCircle, AlertCircle, ChevronRight, FileText, X, Clock } from 'lucide-react';
+import { ChevronLeft, CheckCircle, XCircle, AlertCircle, ChevronRight, FileText, X, Clock } from 'lucide-react';
 import { PieChart, Pie, Cell } from 'recharts';
 import { ReportModal } from '../shared/ReportModal';
 import { useT } from '../../ThemeContext';
@@ -15,15 +15,31 @@ function formatTime(time: string): string {
   return time || '—';
 }
 
+function formatDetailTime(value?: string | null) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleString('en-US', {
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return value;
+  }
+}
+
 function ScanLogModal({ round, onClose }: { round: Store['rounds'][number]; onClose: () => void }) {
   const t = useT();
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end">
       <div className={`w-full rounded-t-2xl max-h-[80vh] flex flex-col ${t.cardFlat}`}>
         <div className={`flex items-center justify-between px-4 py-4 border-b ${t.border}`}>
-          <div>
-            <h3 className={`font-semibold ${t.text}`}>{round.name}</h3>
-            <p className={`text-xs ${t.textXs}`}>{round.staff} · {round.time} · {round.compliance}% compliance</p>
+        <div>
+            <h3 className={`font-semibold ${t.text}`}>Round {round.roundNumber ?? '—'} · {round.name}</h3>
+            <p className={`text-xs ${t.textXs}`}>
+              Completed by {round.completedBy ?? round.staff ?? '—'} · {formatDetailTime(round.completionTime ?? round.time ?? null)} · {round.compliance}% compliance
+            </p>
           </div>
           <button onClick={onClose} className={`p-1.5 rounded-full ${t.hoverRow}`}><X className={`w-4 h-4 ${t.textSm}`} /></button>
         </div>
@@ -76,18 +92,22 @@ export function StoreDashboard({ storeId, goBack, navigate }: Props) {
     pending: store.tags.filter(tag => tag.status === 'pending' || tag.status === 'unassigned').length,
     error: store.tags.filter(tag => tag.status === 'error' || tag.status === 'warning').length,
   };
+  const nfcDetailsToShow = store.nfcDetails.length > 0
+    ? store.nfcDetails
+    : store.tags.map(tag => ({
+        id: tag.id,
+        name: tag.location || tag.uid,
+        requiredScanCount: store.dailyRounds ?? store.rounds.length ?? 0,
+        completedScanCount: tag.lastScanned ? 1 : 0,
+        checkpointNames: tag.location ? [tag.location] : [tag.uid],
+        lastScanTime: tag.lastScanned ?? null,
+        status: tag.lastScanned ? 'completed' as const : 'pending' as const,
+      }));
 
   const pieData = [
     { value: store.compliance, color: '#dc2626' },
     { value: 100 - store.compliance, color: '#fca5a5' },
   ];
-
-  const statusCls: Record<string, string> = {
-    active: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
-    pending: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-    error: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
-    warning: 'bg-amber-100 text-amber-700',
-  };
 
   return (
     <div className={`flex-1 overflow-y-auto pb-6 ${t.page}`}>
@@ -136,7 +156,7 @@ export function StoreDashboard({ storeId, goBack, navigate }: Props) {
 
         <div className={`rounded-2xl border shadow-sm overflow-hidden ${t.card}`}>
           <div className={`px-4 py-3 border-b ${t.border} flex items-center justify-between`}>
-            <h3 className={`font-semibold text-sm ${t.text}`}>NFC Tags & Locations</h3>
+            <h3 className={`font-semibold text-sm ${t.text}`}>NFC Progress</h3>
             <div className="flex gap-2 text-xs">
               <span className="text-green-600">{tagStatusCount.active} active</span>
               <span className="text-amber-500">{tagStatusCount.pending} pending</span>
@@ -144,20 +164,26 @@ export function StoreDashboard({ storeId, goBack, navigate }: Props) {
             </div>
           </div>
           <div className={`divide-y ${t.divide}`}>
-            {store.tags.map(tag => (
-              <div key={tag.id} className="px-4 py-3 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${t.redLight}`}>
-                    <MapPin className="w-4 h-4 text-red-500" />
+            {nfcDetailsToShow.map(detail => (
+              <div key={detail.id} className="px-4 py-3.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className={`text-sm font-medium ${t.text}`}>{detail.name}</div>
+                    <div className={`text-xs ${t.textMuted}`}>Required scans: {detail.requiredScanCount}</div>
+                    <div className={`text-xs ${t.textSm}`}>Completed scans: {detail.completedScanCount}</div>
+                    <div className={`text-xs mt-1 ${t.textMuted}`}>Checkpoints:</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {detail.checkpointNames.map(name => (
+                        <span key={name} className="text-[11px] px-2 py-0.5 rounded-full bg-orange-50 text-orange-600 dark:bg-orange-900/30 dark:text-orange-300">
+                          {name}
+                        </span>
+                      ))}
+                    </div>
+                    <div className={`text-xs mt-2 ${t.textXs}`}>Last scan: {formatDetailTime(detail.lastScanTime)}</div>
                   </div>
-                  <div>
-                    <div className={`text-sm font-medium ${t.text}`}>{tag.location}</div>
-                    <div className={`text-xs font-mono ${t.textMuted}`}>{tag.uid.substring(0, 11)} · {tag.zone}</div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusCls[tag.status]}`}>{tag.status}</span>
-                  {tag.lastScanned && <div className={`text-xs mt-0.5 ${t.textMuted}`}>{tag.lastScanned}</div>}
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${detail.status === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>
+                    {detail.status}
+                  </span>
                 </div>
               </div>
             ))}
@@ -176,16 +202,17 @@ export function StoreDashboard({ storeId, goBack, navigate }: Props) {
               <button key={round.id} onClick={() => setActiveRound(round)} className={`w-full px-4 py-4 flex items-center justify-between ${t.hoverRow} text-left transition-colors ${i > 0 ? `border-t ${t.borderGray}` : ''}`}>
                 <div className="flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white ${round.compliance >= 85 ? 'bg-green-500' : round.compliance >= 70 ? 'bg-amber-500' : 'bg-red-500'}`}>
-                    {round.compliance}%
+                    {round.roundNumber ?? i + 1}
                   </div>
                   <div>
-                    <div className={`text-sm font-medium ${t.text}`}>{round.name}</div>
-                    <div className={`text-xs ${t.textXs}`}>{round.staff}</div>
+                    <div className={`text-sm font-medium ${t.text}`}>Round {round.roundNumber ?? i + 1}</div>
+                    <div className={`text-xs ${t.textXs}`}>{round.name}</div>
+                    <div className={`text-xs mt-0.5 ${t.textMuted}`}>Completed by {round.completedBy ?? round.staff ?? '—'}</div>
                     <div className={`flex items-center gap-1 text-xs mt-0.5 ${t.textMuted}`}>
                       <Clock className="w-3 h-3" />
-                      {round.time}
+                      {formatDetailTime(round.completionTime ?? round.time ?? null)}
                     </div>
-                    <div className={`text-xs mt-0.5 ${t.textXs}`}>{round.completedScans}/{round.totalScans} scans</div>
+                    <div className={`text-xs mt-0.5 ${t.textXs}`}>{round.completedScans}/{round.totalScans} scans · {round.status ?? 'pending'}</div>
                   </div>
                 </div>
                 <ChevronRight className={`w-4 h-4 ${t.textMuted}`} />

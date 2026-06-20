@@ -360,11 +360,11 @@ function RoundSetupView({ goBack, storeId }: { goBack: () => void; storeId?: str
         </div>
 
         <div className={`rounded-2xl border shadow-sm p-4 ${t.card}`}>
-          <h3 className={`text-sm font-semibold mb-0.5 ${t.text}`}>Number of Rounds</h3>
-          <p className={`text-xs mb-4 ${t.textXs}`}>Total cleaning rounds per shift per day</p>
+          <h3 className={`text-sm font-semibold mb-0.5 ${t.text}`}>Rounds Per Day</h3>
+          <p className={`text-xs mb-4 ${t.textXs}`}>Total cleaning rounds configured for this store</p>
           <div className="flex items-center gap-3">
             <input type="number" min={1} max={99} value={numRounds} onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v) && v >= 1) setNumRounds(Math.min(99, v)); }} className={`w-28 px-4 py-3 border-2 rounded-xl text-2xl font-bold text-center focus:outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 text-orange-500 ${t.input}`} />
-            <span className={`text-sm ${t.textSm}`}>{numRounds === 1 ? 'round per shift' : 'rounds per shift'}</span>
+            <span className={`text-sm ${t.textSm}`}>{numRounds === 1 ? 'round per day' : 'rounds per day'}</span>
           </div>
         </div>
 
@@ -395,10 +395,10 @@ function RoundSetupView({ goBack, storeId }: { goBack: () => void; storeId?: str
           <h3 className={`text-xs font-semibold uppercase tracking-wider mb-3 ${t.textXs}`}>Configuration Summary</h3>
           {[
             { label: 'Store', value: stores.find(s => s.id === selectedStoreId)?.name ?? '—' },
-            { label: 'Rounds per shift', value: `${numRounds} rounds` },
+            { label: 'Rounds per day', value: `${numRounds} rounds` },
             { label: 'Round duration', value: `${roundDuration} min` },
             { label: 'Duplicate window', value: `${dupWindow} min` },
-            { label: 'Maximum shift time', value: `${numRounds * roundDuration} min (${Math.round((numRounds * roundDuration) / 60 * 10) / 10} hrs)` },
+            { label: 'Maximum daily time', value: `${numRounds * roundDuration} min (${Math.round((numRounds * roundDuration) / 60 * 10) / 10} hrs)` },
           ].map((row, i) => (
             <div key={row.label} className={`flex items-center justify-between py-2 ${i > 0 ? `border-t ${t.borderGray}` : ''}`}>
               <span className={`text-xs ${t.textMuted}`}>{row.label}</span>

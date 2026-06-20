@@ -21,6 +21,7 @@ class StoreDashboardResponse(BaseModel):
     alert_summary: AlertSummaryResponse
     compliance_history: List[dict]
     rounds: List[dict]
+    nfc_details: List[dict]
     alerts: List[AlertResponse]
     stale_time: Optional[str] = None
 
@@ -41,4 +42,3 @@ class CleanerDashboardResponse(BaseModel):
     compliance_history: List[dict]
     stats: dict
     alerts: List[AlertResponse]
-

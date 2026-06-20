@@ -83,20 +83,28 @@ function StoreHeader({ storeName, alertCount, onAlerts }: { storeName: string; a
   );
 }
 
-function ScanTab({ checkpoints, scanStatus, onScan, onAlerts, alertCount, storeName }: {
+function ScanTab({ checkpoints, scanStatus, onScan, onAlerts, alertCount, storeName, configuredRounds, completedRounds, allWorkCompleted }: {
   checkpoints: Checkpoint[];
   scanStatus: ScanStatus;
   onScan: () => void;
   onAlerts: () => void;
   alertCount: number;
   storeName: string;
+  configuredRounds: number;
+  completedRounds: number;
+  allWorkCompleted: boolean;
 }) {
   const t = useT();
   const scannedCount = checkpoints.filter(c => c.status === 'verified').length;
   const errorCount = checkpoints.filter(c => c.status === 'error').length;
   const pendingCount = checkpoints.filter(c => c.status === 'pending' || c.status === 'scanning').length;
   const compliance = checkpoints.length ? Math.round((scannedCount / checkpoints.length) * 100) : 0;
-  const allDone = pendingCount === 0 && scannedCount + errorCount === checkpoints.length;
+  const hasConfiguredRounds = configuredRounds > 0;
+  const hasCheckpointWork = checkpoints.length > 0;
+  const currentRoundComplete = hasCheckpointWork && pendingCount === 0 && errorCount === 0 && scannedCount === checkpoints.length;
+  const allDone = allWorkCompleted || (hasConfiguredRounds && completedRounds >= configuredRounds && currentRoundComplete);
+  const scanLabel = allDone ? 'ALL DONE' : hasCheckpointWork ? 'TAP TO SCAN' : 'WAITING FOR FIRST SCAN';
+  const scanDisabled = scanStatus === 'scanning' || allDone || !hasCheckpointWork;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -118,7 +126,7 @@ function ScanTab({ checkpoints, scanStatus, onScan, onAlerts, alertCount, storeN
       </div>
 
       <div className={`shrink-0 flex flex-col items-center gap-4 pt-5 pb-4 px-4 ${t.page}`}>
-        <button onClick={onScan} disabled={scanStatus === 'scanning' || allDone} className={`w-52 h-52 rounded-full flex items-center justify-center relative transition-all duration-200 select-none shadow-2xl ${scanStatus === 'scanning' ? 'bg-orange-400' : scanStatus === 'verified' ? 'bg-green-500' : scanStatus === 'error' ? 'bg-red-600' : 'bg-orange-500 hover:bg-orange-400 active:scale-95'}`}>
+        <button onClick={onScan} disabled={scanDisabled} className={`w-52 h-52 rounded-full flex items-center justify-center relative transition-all duration-200 select-none shadow-2xl ${scanStatus === 'scanning' ? 'bg-orange-400' : scanStatus === 'verified' ? 'bg-green-500' : scanStatus === 'error' ? 'bg-red-600' : scanDisabled ? 'bg-orange-400' : 'bg-orange-500 hover:bg-orange-400 active:scale-95'}`}>
           <div className="absolute inset-5 rounded-full border-[2px] border-dashed border-white/50 pointer-events-none" />
           {scanStatus === 'scanning' ? (
             <span className="w-14 h-14 border-[5px] border-white border-t-transparent rounded-full animate-spin" />
@@ -133,7 +141,7 @@ function ScanTab({ checkpoints, scanStatus, onScan, onAlerts, alertCount, storeN
                 <path d="M18 30 a 14 14 0 0 1 24 0" stroke="white" strokeWidth="3.5" strokeLinecap="round" />
                 <path d="M8 22 a 24 24 0 0 1 44 0" stroke="white" strokeWidth="3.5" strokeLinecap="round" opacity="0.6" />
               </svg>
-              <span className="text-white font-bold text-sm tracking-widest uppercase">{allDone ? 'ALL DONE' : 'TAP TO SCAN'}</span>
+              <span className="text-white font-bold text-sm tracking-widest uppercase text-center px-6 leading-tight">{scanLabel}</span>
             </div>
           )}
         </button>
@@ -396,6 +404,14 @@ export function CleanerApp({ user, onLogout }: Props) {
   const nextCheckpoint = checkpoints.find(cp => cp.status === 'pending');
   const storeName = dashboard?.store ? `${dashboard.store.name} ${dashboard.store.storeNumber}` : 'CleanCheck';
   const alertCount = dashboard?.alerts.length ?? 0;
+  const configuredRounds = dashboard?.stats.configured_rounds ?? dashboard?.store?.dailyRounds ?? 0;
+  const completedRounds = dashboard?.stats.completed_rounds ?? dashboard?.completed_rounds.length ?? 0;
+  const completedRoundItems = dashboard?.completed_rounds ?? [];
+  const allCompletedRoundsHaveRequiredScans = completedRoundItems.length > 0
+    && completedRoundItems.every(round => round.totalScans > 0 && round.completedScans >= round.totalScans);
+  const allWorkCompleted = configuredRounds > 0
+    && completedRounds >= configuredRounds
+    && allCompletedRoundsHaveRequiredScans;
 
   const handleScan = async () => {
     if (!dashboard?.store || !nextCheckpoint || scanStatus === 'scanning') return;
@@ -462,7 +478,19 @@ export function CleanerApp({ user, onLogout }: Props) {
       </div>
 
       <div className="flex-1 overflow-hidden flex flex-col">
-        {activeTab === 'scan' && <ScanTab checkpoints={checkpoints} scanStatus={scanStatus} onScan={handleScan} onAlerts={() => setAlertsOpen(true)} alertCount={alertCount} storeName={storeName} />}
+        {activeTab === 'scan' && (
+          <ScanTab
+            checkpoints={checkpoints}
+            scanStatus={scanStatus}
+            onScan={handleScan}
+            onAlerts={() => setAlertsOpen(true)}
+            alertCount={alertCount}
+            storeName={storeName}
+            configuredRounds={configuredRounds}
+            completedRounds={completedRounds}
+            allWorkCompleted={allWorkCompleted}
+          />
+        )}
         {activeTab === 'dashboard' && dashboard && <DashboardTab checkpoints={checkpoints} onAlerts={() => setAlertsOpen(true)} alertCount={alertCount} storeName={storeName} currentRound={dashboard.current_round} completedRounds={dashboard.completed_rounds} complianceHistory={dashboard.compliance_history} stats={dashboard.stats} />}
         {activeTab === 'home' && dashboard && <HomeTab user={user} storeName={storeName} alerts={dashboard.alerts} currentShift={{ start: user.shiftStart || '06:00', end: user.shiftEnd || '14:00' }} onEditShift={editShift} onAlerts={() => setAlertsOpen(true)} alertCount={alertCount} complianceHistory={dashboard.compliance_history} stats={dashboard.stats} />}
       </div>

@@ -24,6 +24,26 @@ interface Props {
 
 type GridSelection = 'alerts' | 'nfc' | 'compliance' | null;
 
+function formatDetailTime(value?: string | null) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleString('en-US', {
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return value;
+  }
+}
+
+function roundStatusTone(status?: string | null) {
+  if (status === 'completed') return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400';
+  if (status === 'active') return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300';
+}
+
 function parseTime(t: string): number {
   if (!t || t === '—') return 0;
   const parts = t.split(' ');
@@ -205,6 +225,18 @@ export function DashboardTab({ navigate }: Props) {
   const selectedStoreAlerts = activeStore?.alerts ?? [];
   const selectedStoreRounds = activeStore?.rounds ?? [];
   const selectedStoreTags = activeStore?.tags ?? [];
+  const selectedStoreNfcDetails = activeStore?.nfcDetails ?? [];
+  const nfcDetailsToShow = selectedStoreNfcDetails.length > 0
+    ? selectedStoreNfcDetails
+    : selectedStoreTags.map(tag => ({
+        id: tag.id,
+        name: tag.location || tag.uid,
+        requiredScanCount: activeStore?.dailyRounds ?? selectedStoreRounds.length ?? 0,
+        completedScanCount: 0,
+        checkpointNames: tag.location ? [tag.location] : [tag.uid],
+        lastScanTime: tag.lastScanned ?? null,
+        status: 'pending' as const,
+      }));
 
   return (
     <div className={`flex-1 overflow-y-auto pb-6 ${t.page}`}>
@@ -308,17 +340,34 @@ export function DashboardTab({ navigate }: Props) {
                   <h3 className={`font-semibold text-sm ${t.text}`}>Round Details</h3>
                 </div>
                 <div className={`divide-y ${t.divide}`}>
-                  {selectedStoreRounds.map(round => (
-                    <div key={round.id} className="px-4 py-3.5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className={`text-sm font-semibold ${t.text}`}>{round.name}</div>
-                          <div className={`text-xs ${t.textMuted}`}>{round.staff} · {round.time}</div>
+                  {selectedStoreRounds.map((round, index) => {
+                    const roundNumber = round.roundNumber ?? index + 1;
+                    const completedBy = round.completedBy ?? round.staff ?? '—';
+                    const completionTime = formatDetailTime(round.completionTime ?? round.time ?? null);
+                    const status = (round.status ?? (round.completedScans >= round.totalScans && round.totalScans > 0 ? 'completed' : 'pending')).toLowerCase();
+                    return (
+                      <div key={round.id} className="px-4 py-3.5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3 min-w-0">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white ${status === 'completed' ? 'bg-green-500' : status === 'active' ? 'bg-amber-500' : 'bg-gray-400'}`}>
+                              {roundNumber}
+                            </div>
+                            <div className="min-w-0">
+                              <div className={`text-sm font-semibold ${t.text}`}>Round {roundNumber}</div>
+                              <div className={`text-xs ${t.textMuted}`}>{round.name}</div>
+                              <div className={`text-xs mt-1 ${t.textSm}`}>Completed by {completedBy}</div>
+                              <div className={`text-xs mt-0.5 ${t.textXs}`}>Completion time: {completionTime}</div>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${roundStatusTone(status)}`}>{status}</span>
+                            <div className={`text-xs font-bold mt-2 ${t.text}`}>{round.compliance}%</div>
+                            <div className={`text-xs ${t.textMuted}`}>{round.completedScans}/{round.totalScans} scans</div>
+                          </div>
                         </div>
-                        <div className={`text-xs font-bold ${t.text}`}>{round.compliance}% · {round.completedScans}/{round.totalScans}</div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -347,17 +396,29 @@ export function DashboardTab({ navigate }: Props) {
             {selectedGrid === 'nfc' && (
               <div className={`rounded-2xl border shadow-sm overflow-hidden ${t.card}`}>
                 <div className={`px-4 py-3 border-b ${t.border}`}>
-                  <h3 className={`font-semibold text-sm ${t.text}`}>NFC Tags</h3>
+                  <h3 className={`font-semibold text-sm ${t.text}`}>NFC Progress</h3>
                 </div>
                 <div className={`divide-y ${t.divide}`}>
-                  {selectedStoreTags.map(tag => (
-                    <div key={tag.id} className="px-4 py-3.5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className={`text-sm font-medium ${t.text}`}>{tag.location}</div>
-                          <div className={`text-xs font-mono ${t.textMuted}`}>{tag.uid}</div>
+                  {nfcDetailsToShow.map(detail => (
+                    <div key={detail.id} className="px-4 py-3.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className={`text-sm font-semibold ${t.text}`}>{detail.name}</div>
+                          <div className={`text-xs ${t.textMuted}`}>Required scans: {detail.requiredScanCount}</div>
+                          <div className={`text-xs ${t.textSm}`}>Completed scans: {detail.completedScanCount}</div>
+                          <div className={`text-xs mt-1 ${t.textMuted}`}>Checkpoints:</div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {detail.checkpointNames.map(name => (
+                              <span key={name} className="text-[11px] px-2 py-0.5 rounded-full bg-orange-50 text-orange-600 dark:bg-orange-900/30 dark:text-orange-300">
+                                {name}
+                              </span>
+                            ))}
+                          </div>
+                          <div className={`text-xs mt-2 ${t.textXs}`}>Last scan: {formatDetailTime(detail.lastScanTime)}</div>
                         </div>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${tag.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>{tag.status}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${detail.status === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>
+                          {detail.status}
+                        </span>
                       </div>
                     </div>
                   ))}

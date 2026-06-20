@@ -1,5 +1,4 @@
 export type Role = 'admin' | 'cleaner';
-console.log("API URL=", import.meta.env.VITE_API_BASE_URL);
 export interface AppUser {
   role: Role;
   name: string;
@@ -35,6 +34,9 @@ export interface Round {
   compliance: number;
   totalScans: number;
   completedScans: number;
+  roundNumber?: number;
+  completedBy?: string;
+  completionTime?: string | null;
   scans: ScanLog[];
 }
 
@@ -81,9 +83,14 @@ export interface Store {
   nfcCount: number;
   activeAlerts: number;
   lastSync: string;
+  dailyRounds?: number;
+  checkpointCount?: number;
+  roundDurationMinutes?: number;
+  duplicateWindowMinutes?: number;
   tags: NFCTag[];
   alerts: Alert[];
   rounds: Round[];
+  nfcDetails: NFCDetail[];
   complianceHistory: ComplianceData[];
 }
 
@@ -97,6 +104,20 @@ export interface StoreSummary {
   nfcCount: number;
   activeAlerts: number;
   lastSync: string | null;
+  dailyRounds?: number;
+  checkpointCount?: number;
+  roundDurationMinutes?: number;
+  duplicateWindowMinutes?: number;
+}
+
+export interface NFCDetail {
+  id: string;
+  name: string;
+  requiredScanCount: number;
+  completedScanCount: number;
+  checkpointNames: string[];
+  lastScanTime: string | null;
+  status: 'completed' | 'pending';
 }
 
 export interface DashboardStats {
@@ -143,6 +164,9 @@ export interface StoreDashboardResponse {
     completedScans: number;
     isActive?: boolean;
     status?: string;
+    round_number?: number;
+    completed_by?: string;
+    completion_time?: string | null;
     checkpointItems: Array<{
       id: string;
       location: string;
@@ -151,6 +175,15 @@ export interface StoreDashboardResponse {
       status: 'verified' | 'missed' | 'pending' | 'error';
       scannedAt?: string;
     }>;
+  }>;
+  nfc_details: Array<{
+    id: string;
+    name: string;
+    required_scan_count: number;
+    completed_scan_count: number;
+    checkpoint_names: string[];
+    last_scan_time: string | null;
+    status?: 'completed' | 'pending';
   }>;
   alerts: Alert[];
   stale_time?: string | null;
@@ -176,6 +209,8 @@ export interface CleanerDashboardResponse {
     today_compliance: number;
     active_alerts: number;
     completed_rounds: number;
+    configured_rounds?: number;
+    required_checkpoints?: number;
   };
   alerts: Alert[];
 }
@@ -341,6 +376,22 @@ function normalizeStoreSummary(store: any): StoreSummary {
     nfcCount: Number(store.nfcCount ?? 0),
     activeAlerts: Number(store.activeAlerts ?? 0),
     lastSync: store.lastSync ?? null,
+    dailyRounds: store.daily_rounds ?? store.dailyRounds ?? undefined,
+    checkpointCount: store.checkpoint_count ?? store.checkpointCount ?? undefined,
+    roundDurationMinutes: store.round_duration_minutes ?? store.roundDurationMinutes ?? undefined,
+    duplicateWindowMinutes: store.duplicate_window_minutes ?? store.duplicateWindowMinutes ?? undefined,
+  };
+}
+
+function normalizeNfcDetail(item: any): NFCDetail {
+  return {
+    id: String(item.id),
+    name: item.name ?? '',
+    requiredScanCount: Number(item.required_scan_count ?? 0),
+    completedScanCount: Number(item.completed_scan_count ?? 0),
+    checkpointNames: Array.isArray(item.checkpoint_names) ? item.checkpoint_names.map((value: any) => String(value)) : [],
+    lastScanTime: item.last_scan_time ?? null,
+    status: item.status === 'completed' ? 'completed' : 'pending',
   };
 }
 
@@ -450,8 +501,12 @@ export async function getStoreDashboard(storeId: string): Promise<StoreDashboard
       completedScans: round.completedScans,
       isActive: Boolean((data.rounds || []).find((item: any) => item.id === round.id)?.isActive),
       status: (data.rounds || []).find((item: any) => item.id === round.id)?.status ?? 'completed',
+      round_number: (data.rounds || []).find((item: any) => item.id === round.id)?.round_number,
+      completed_by: (data.rounds || []).find((item: any) => item.id === round.id)?.completed_by,
+      completion_time: (data.rounds || []).find((item: any) => item.id === round.id)?.completion_time ?? null,
       checkpointItems: (data.rounds || []).find((item: any) => item.id === round.id)?.checkpointItems || [],
     })),
+    nfc_details: (data.nfc_details || []).map(normalizeNfcDetail),
     alerts: (data.alerts || []).map(normalizeAlert),
     stale_time: data.stale_time ?? null,
   };
@@ -733,6 +788,10 @@ export async function loadStoreView(storeId: string): Promise<Store> {
     nfcCount: dashboard.store.nfcCount,
     activeAlerts: dashboard.store.activeAlerts,
     lastSync: dashboard.store.lastSync ?? '—',
+    dailyRounds: dashboard.store.dailyRounds ?? dashboard.store.daily_rounds ?? undefined,
+    checkpointCount: dashboard.store.checkpointCount ?? dashboard.store.checkpoint_count ?? undefined,
+    roundDurationMinutes: dashboard.store.roundDurationMinutes ?? dashboard.store.round_duration_minutes ?? undefined,
+    duplicateWindowMinutes: dashboard.store.duplicateWindowMinutes ?? dashboard.store.duplicate_window_minutes ?? undefined,
     tags: tags.map(tag => ({
       ...tag,
       storeId,
@@ -745,11 +804,14 @@ export async function loadStoreView(storeId: string): Promise<Store> {
       id: round.id,
       storeId,
       name: round.name,
-      time: round.time,
-      staff: round.staff,
+      time: round.time ?? '',
+      staff: round.staff ?? '',
       compliance: round.compliance,
       totalScans: round.totalScans,
       completedScans: round.completedScans,
+      roundNumber: round.round_number,
+      completedBy: round.completed_by,
+      completionTime: round.completion_time ?? null,
       scans: round.checkpointItems.map(item => ({
         id: item.id,
         location: item.location,
@@ -760,6 +822,7 @@ export async function loadStoreView(storeId: string): Promise<Store> {
         compliance: item.status === 'verified' ? 100 : 0,
       })),
     })),
+    nfcDetails: (dashboard.nfc_details || []).map(normalizeNfcDetail),
     complianceHistory: dashboard.compliance_history,
   };
 }
